@@ -1,10 +1,30 @@
 {
   "name": "agentic-control-plane",
   "version": "0.1.0",
-  "description": "Identity, governance, and audit for Codex tool calls. Logs shell commands, enforces policies with human approvals, and gives teams full visibility — without changing how you use Codex.",
-  "author": "GatewayStack",
+  "description": "Identity, governance, and audit for Codex tool calls — without changing how you use Codex.",
+  "author": {
+    "name": "GatewayStack",
+    "url": "https://agenticcontrolplane.com"
+  },
   "homepage": "https://agenticcontrolplane.com",
   "repository": "https://github.com/agentic-control-plane/codex-acp-plugin",
-  "skills": ["./skills/acp", "./skills/acp-connect", "./skills/cost-xray"],
-  "mcpServers": "./.mcp.json"
+  "license": "MIT",
+  "keywords": ["governance", "audit", "cost", "security", "mcp", "observability"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "Agentic Control Plane",
+    "shortDescription": "Govern, audit, and cost-optimize every shell command.",
+    "longDescription": "Logs every shell command Codex runs with identity attribution, enforces server-side policies with human approvals, and bundles the ACP MCP server so Codex can read its own cost and audit data.",
+    "developerName": "GatewayStack",
+    "category": "Security",
+    "websiteURL": "https://agenticcontrolplane.com",
+    "privacyPolicyURL": "https://agenticcontrolplane.com/privacy",
+    "termsOfServiceURL": "https://agenticcontrolplane.com/terms",
+    "brandColor": "#4f46e5",
+    "defaultPrompt": [
+      "Show me what my agents spent this week using the acp_cost tool"
+    ]
+  }
 }

@@ -1,0 +1,19 @@
+{
+  "name": "acp",
+  "interface": {
+    "displayName": "Agentic Control Plane"
+  },
+  "plugins": [
+    {
+      "name": "agentic-control-plane",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE"
+      },
+      "category": "Security"
+    }
+  ]
+}
