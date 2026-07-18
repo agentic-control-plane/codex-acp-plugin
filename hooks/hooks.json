@@ -1,0 +1,29 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ACP_HARNESS=codex ACP_CLIENT=codex-plugin node \"$CLAUDE_PLUGIN_ROOT/bin/govern.mjs\"",
+            "statusMessage": "ACP policy check",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ACP_HARNESS=codex ACP_CLIENT=codex-plugin node \"$CLAUDE_PLUGIN_ROOT/bin/govern.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

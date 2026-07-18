@@ -1,0 +1,10 @@
+{
+  "name": "agentic-control-plane",
+  "version": "0.1.0",
+  "description": "Identity, governance, and audit for Codex tool calls. Logs shell commands, enforces policies with human approvals, and gives teams full visibility — without changing how you use Codex.",
+  "author": "GatewayStack",
+  "homepage": "https://agenticcontrolplane.com",
+  "repository": "https://github.com/agentic-control-plane/codex-acp-plugin",
+  "skills": ["./skills/acp", "./skills/acp-connect", "./skills/cost-xray"],
+  "mcpServers": "./.mcp.json"
+}

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "acp": {
+      "type": "http",
+      "url": "https://api.agenticcontrolplane.com/mcp"
+    }
+  }
+}
