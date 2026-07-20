@@ -31,7 +31,7 @@ $acp-connect
 |---|---|
 | `PreToolUse` hook | POSTs the command to `/govern/tool-use` before execution. `deny` blocks it with the policy reason. An `ask` policy blocks with an approval deep link — approve on the dashboard (or from the notification email), re-run, and the standing grant admits it. |
 | `PostToolUse` hook | POSTs the result to `/govern/tool-output` for audit, redaction logging, and DLP scanning. |
-| MCP server (`acp`) | Streamable HTTP at `api.agenticcontrolplane.com/mcp`. Sign-in uses MCP OAuth — Codex opens the browser, you approve, and calls are attributed to your user. ~8 introspection tools, no side-effectful surface. |
+| MCP server (`acp`) | Streamable HTTP at `api.agenticcontrolplane.com/mcp`. Sign-in uses MCP OAuth — Codex opens the browser, you approve, and calls are attributed to your user. 9 governance tools — 8 read-only introspection tools plus `acp_propose_rule`, which drafts a policy rule for a human to confirm in the console (it never applies policy itself). |
 | Skills | `acp` (how governance works), `acp-connect` (setup), `cost-xray` (read your own spend). |
 
 ### Codex-specific behavior (honest notes)
