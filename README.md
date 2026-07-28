@@ -39,7 +39,7 @@ $acp-connect
 - **Coverage**: Codex fires `PreToolUse` for shell commands only — file edits, web fetches, and MCP calls don't hit hooks yet. Shell is where the blast radius lives, but this is narrower than the Claude Code plugin's full-surface coverage. ([Codex hooks docs](https://developers.openai.com/codex/hooks))
 - **Approvals**: Codex's hook parser acts on `deny` only — there is no inline `ask` prompt like Claude Code's. ACP maps `ask` to a deny that carries the approval link; after a human approves, the identical re-run passes under the grant.
 - **No token injection**: Codex rejects `updatedInput`, so ACP's scoped vendor-token injection (GitHub etc.) is disabled under Codex; your local credentials are used as before.
-- **Fail-safe**: gateway unreachable / gateway error → the command is blocked with a clear message (fail-closed on infrastructure doubt for the enforcement path; configure `ACP_API_BASE`/`ACP_GOVERN_BASE` for self-hosted).
+- **Fail-safe, never-brick** (#385): gateway unreachable / gateway error → interactive sessions proceed with a loud `⚠ UNGOVERNED` warning and a lapse record in `~/.acp/lapse.log` (a human is present to read it); unattended tiers (subagent/background) stay blocked with a clear message. Configure `ACP_API_BASE`/`ACP_GOVERN_BASE` for self-hosted.
 
 ## Enterprise
 
