@@ -64,7 +64,7 @@ const ACP_GOVERN =
   process.env.ACP_API_BASE ||
   "https://govern.agenticcontrolplane.com";
 
-const PLUGIN_VERSION = "0.6.6";
+const PLUGIN_VERSION = "0.6.7";
 
 // Identifies the calling client to the server (per-client policy routing).
 // Each client's hooks.json sets this env var at invocation time:
@@ -231,9 +231,6 @@ async function handlePreToolUse() {
     permission_mode: input.permission_mode,
   });
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 4000);
-
   // Three distinct deny categories — distinguishable at-a-glance.
   function denyByPolicy(reason) {
     process.stdout.write(JSON.stringify({
@@ -290,15 +287,43 @@ async function handlePreToolUse() {
   }
 
   // Step 1: policy check.
+  //
+  // Two attempts inside one budget, not one long one (gatewaystack-connect#690).
+  // Confirmed 2026-08-13: a /govern/tool-use call took 4.635s and answered
+  // HTTP 200 — an ALLOW — but the single 4s attempt had already aborted, and
+  // at an unattended tier the fail-closed posture turned that allow into a
+  // deny. Slow answers are cold starts, so the retry lands on a warm
+  // instance. The split keeps the total under the harness hook timeout —
+  // overrunning it would be killed mid-flight and denied with no reason.
+  const FIRST_ATTEMPT_MS = Number(process.env.ACP_FIRST_ATTEMPT_MS) || 2200;
+  const RETRY_ATTEMPT_MS = Number(process.env.ACP_RETRY_ATTEMPT_MS) || 1600;
+
+  async function askPolicy(budgetMs) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), budgetMs);
+    try {
+      return await fetch(`${ACP_GOVERN}/govern/tool-use`, {
+        method: "POST",
+        headers,
+        body,
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   let policyAllowed = true;
+  let res;
   try {
-    const res = await fetch(`${ACP_GOVERN}/govern/tool-use`, {
-      method: "POST",
-      headers,
-      body,
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
+    try {
+      res = await askPolicy(FIRST_ATTEMPT_MS);
+    } catch {
+      // Only a transport failure (abort / network) reaches here — fetch
+      // resolves for every HTTP status, so a 429 or a policy deny is never
+      // re-rolled. A second failure falls through to the fail posture.
+      res = await askPolicy(RETRY_ATTEMPT_MS);
+    }
     if (!res.ok) {
       denyGatewayError(res.status, res.statusText);
       return;
@@ -315,9 +340,8 @@ async function handlePreToolUse() {
     // decision is allow (or unspecified) — continue to step 2.
     policyAllowed = true;
   } catch (err) {
-    clearTimeout(timeout);
     const reason = err && err.name === "AbortError"
-      ? "request timed out"
+      ? "request timed out twice"
       : (err && err.message ? err.message : "network error");
     denyUnreachable(reason);
     return;
