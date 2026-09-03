@@ -43,7 +43,9 @@ $acp-connect
 
 ## Enterprise
 
-Codex admins can enforce MCP-server allowlists via `requirements.toml`. ACP is one entry — and it's the entry that makes the rest of the allowlist observable.
+Codex's `requirements.toml` — from a system file, a macOS MDM profile, or the ChatGPT Enterprise workspace's managed configuration — can carry this hook to every seat as a managed `PreToolUse`/`PostToolUse` hook that users can't remove (`allow_managed_hooks_only`), plus an `[mcp_servers.acp]` allowlist entry by URL. Codex enforces the hook config but doesn't ship the script, so your MDM copies `govern.mjs` and a two-line wrapper into the `managed_dir` the config names. Set `ACP_REQUIRE_ENROLLMENT=1` in that wrapper and an unenrolled seat blocks each shell command with the enrollment step instead of running it ungoverned; each person enrolls once by signing in at the ACP console and writing their own key to `~/.acp/credentials`, so every call stays attributed to a person.
+
+The complete file and the MDM drop: https://agenticcontrolplane.com/docs/enterprise/codex
 
 ## License
 
