@@ -152,7 +152,12 @@ if (!token) process.exit(0);
 
 let input;
 try {
-  input = JSON.parse(readFileSync("/dev/stdin", "utf8"));
+  // Read stdin as a stream. readFileSync("/dev/stdin") throws EAGAIN on
+  // Linux when the parent hands over a non-blocking pipe (Node's own
+  // child_process does), which made the hook exit silently there.
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
 } catch {
   process.exit(0);
 }
