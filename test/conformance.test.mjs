@@ -179,7 +179,7 @@ if (noticeRow?.status === "not-possible") {
 } else {
   test('notice-shown: gateway "notice" text reaches stdout systemMessage [EXPECTED DIVERGENCE #1334]', async () => {
     const c = casesById["notice-shown"];
-    const { server } = startFakeGateway(c.gatewayReply);
+    const { server, requests } = startFakeGateway(c.gatewayReply);
     const port = await listen(server);
     const event = {
       hook_event_name: "PostToolUse",
@@ -191,6 +191,16 @@ if (noticeRow?.status === "not-possible") {
     };
     const result = await runHook(event, c.env, `http://127.0.0.1:${port}`);
     await close(server);
+
+    // Guard against a false pass: confirm the plugin actually reached our
+    // fake gateway before drawing any conclusion from what did or didn't
+    // show up on stdout/stderr. (An in-process fake gateway driven by a
+    // *synchronous* child-process call would never see this request at all —
+    // the sync call blocks the event loop that the server needs to answer —
+    // and a "marker absent" read would then be indistinguishable from the
+    // real #1334 bug. runHook uses async spawn precisely to avoid that.)
+    const posted = requests.find((r) => r.method === "POST" && r.path === "/govern/tool-output");
+    assert.ok(posted, "plugin never POSTed to /govern/tool-output — cannot conclude anything about notice display");
 
     const seen = markerVisible(result);
     assert.ok(
@@ -210,7 +220,7 @@ if (noticeRow?.status === "not-possible") {
 
   test("notice-shadow-off: ACP_SHADOW=off keeps the marker off stdout/stderr", async () => {
     const c = casesById["notice-shadow-off"];
-    const { server } = startFakeGateway(c.gatewayReply);
+    const { server, requests } = startFakeGateway(c.gatewayReply);
     const port = await listen(server);
     const event = {
       hook_event_name: "PostToolUse",
@@ -222,6 +232,10 @@ if (noticeRow?.status === "not-possible") {
     };
     const result = await runHook(event, c.env, `http://127.0.0.1:${port}`);
     await close(server);
+    // Same false-pass guard as notice-shown: confirm the request actually
+    // arrived before trusting the absence of the marker.
+    const posted = requests.find((r) => r.method === "POST" && r.path === "/govern/tool-output");
+    assert.ok(posted, "plugin never POSTed to /govern/tool-output — cannot conclude anything about notice display");
     // This plugin currently drops every notice regardless of ACP_SHADOW, so
     // this case trivially passes today (nothing is shown either way). It
     // still runs for real so a future fix that reads data.notice but forgets
