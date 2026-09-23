@@ -434,6 +434,8 @@ async function handlePreToolUse() {
 /* PostToolUse                                                         */
 /* ------------------------------------------------------------------ */
 
+const NOTICES_OFF = /^(off|0|false)$/i.test(process.env.ACP_SHADOW ?? "");
+
 async function handlePostToolUse() {
   let outputStr = "";
   try {
@@ -463,11 +465,18 @@ async function handlePostToolUse() {
     clearTimeout(timeout);
     if (!res.ok) { process.exit(0); }
     const data = await res.json();
+    // Gateway notices (cost advisories, shadow counterfactuals) ride the
+    // `notice` field. Same contract as the Claude Code plugin: show it to the
+    // person as systemMessage, never to the model; ACP_SHADOW=off silences it.
+    // gatewaystack-connect#1334 — this plugin used to drop every notice.
+    const lines = [];
     if (data.action === "redact" || data.action === "block") {
-      process.stdout.write(JSON.stringify({
-        systemMessage: `[ACP] ${data.action === "block" ? "Blocked" : "Flagged"}: ${data.reason || "governance policy"}`,
-      }));
+      lines.push(`[ACP] ${data.action === "block" ? "Blocked" : "Flagged"}: ${data.reason || "governance policy"}`);
     }
+    if (!NOTICES_OFF && typeof data.notice === "string" && data.notice.trim()) {
+      lines.push(data.notice.trim().slice(0, 2000));
+    }
+    if (lines.length) process.stdout.write(JSON.stringify({ systemMessage: lines.join("\n") }));
   } catch {
     // silent pass-through
   } finally { clearTimeout(timeout); }
