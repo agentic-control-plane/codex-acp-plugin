@@ -59,21 +59,13 @@ const CANONICAL_TOOL_NAME_MAP = { shell: "Bash" };
 /* a regression can't slip in silently either.                         */
 /* ------------------------------------------------------------------ */
 
-const EXPECTED_DIVERGENCES = [
-  {
-    case: "notice-shown",
-    issue: "#1334",
-    detail:
-      "handlePostToolUse() in bin/govern.mjs only builds a systemMessage when " +
-      "data.action is 'redact' or 'block'; it never reads data.notice, so a " +
-      "gateway notice never reaches stdout or stderr on origin/main.",
-  },
-];
+// #1334 (notice-shown) was fixed on this branch; no divergences remain.
+const EXPECTED_DIVERGENCES = [];
 
 test("EXPECTED_DIVERGENCES is exactly what's recorded", () => {
   assert.deepEqual(
     EXPECTED_DIVERGENCES.map((d) => d.case).sort(),
-    ["notice-shown"]
+    []
   );
 });
 
@@ -203,19 +195,8 @@ if (noticeRow?.status === "not-possible") {
     assert.ok(posted, "plugin never POSTed to /govern/tool-output — cannot conclude anything about notice display");
 
     const seen = markerVisible(result);
-    assert.ok(
-      isExpectedDivergence(c.id),
-      `case ${c.id} is not listed in EXPECTED_DIVERGENCES but personSees expectation was ${c.expect.personSees}`
-    );
-    // EXPECTED DIVERGENCE (#1334): personSees should be true per the corpus
-    // contract. Asserting the actual (broken) behavior here means this test
-    // FAILS the moment the fix lands — at which point remove this entry from
-    // EXPECTED_DIVERGENCES and change this assertion to assert.equal(seen, true).
-    assert.equal(
-      seen,
-      false,
-      "fixed, remove the entry: notice marker now appears on stdout/stderr — #1334 is resolved on this branch"
-    );
+    assert.equal(isExpectedDivergence(c.id), false);
+    assert.equal(seen, c.expect.personSees, "#1334: the notice marker must appear on stdout/stderr");
   });
 
   test("notice-shadow-off: ACP_SHADOW=off keeps the marker off stdout/stderr", async () => {
