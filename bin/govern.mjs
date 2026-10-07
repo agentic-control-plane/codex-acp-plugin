@@ -64,7 +64,7 @@ const ACP_GOVERN =
   process.env.ACP_API_BASE ||
   "https://govern.agenticcontrolplane.com";
 
-const PLUGIN_VERSION = "0.6.7";
+const PLUGIN_VERSION = "0.6.8";
 
 // Identifies the calling client to the server (per-client policy routing).
 // Each client's hooks.json sets this env var at invocation time:
@@ -152,7 +152,12 @@ if (!token) process.exit(0);
 
 let input;
 try {
-  input = JSON.parse(readFileSync("/dev/stdin", "utf8"));
+  // Read stdin as a stream. readFileSync("/dev/stdin") throws EAGAIN on
+  // Linux when the parent hands over a non-blocking pipe (Node's own
+  // child_process does), which made the hook exit silently there.
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
 } catch {
   process.exit(0);
 }
@@ -434,6 +439,8 @@ async function handlePreToolUse() {
 /* PostToolUse                                                         */
 /* ------------------------------------------------------------------ */
 
+const NOTICES_OFF = /^(off|0|false)$/i.test(process.env.ACP_SHADOW ?? "");
+
 async function handlePostToolUse() {
   let outputStr = "";
   try {
@@ -463,11 +470,18 @@ async function handlePostToolUse() {
     clearTimeout(timeout);
     if (!res.ok) { process.exit(0); }
     const data = await res.json();
+    // Gateway notices (cost advisories, shadow counterfactuals) ride the
+    // `notice` field. Same contract as the Claude Code plugin: show it to the
+    // person as systemMessage, never to the model; ACP_SHADOW=off silences it.
+    // gatewaystack-connect#1334 — this plugin used to drop every notice.
+    const lines = [];
     if (data.action === "redact" || data.action === "block") {
-      process.stdout.write(JSON.stringify({
-        systemMessage: `[ACP] ${data.action === "block" ? "Blocked" : "Flagged"}: ${data.reason || "governance policy"}`,
-      }));
+      lines.push(`[ACP] ${data.action === "block" ? "Blocked" : "Flagged"}: ${data.reason || "governance policy"}`);
     }
+    if (!NOTICES_OFF && typeof data.notice === "string" && data.notice.trim()) {
+      lines.push(data.notice.trim().slice(0, 2000));
+    }
+    if (lines.length) process.stdout.write(JSON.stringify({ systemMessage: lines.join("\n") }));
   } catch {
     // silent pass-through
   } finally { clearTimeout(timeout); }
