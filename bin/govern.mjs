@@ -26,6 +26,8 @@
 //   "[ACP] Denied by policy: ..."                    (policy said no)
 //   "[ACP] Gateway unreachable (...) — ... blocked"  (unattended tier, fail-closed)
 //   "[ACP] ⚠ UNGOVERNED: gateway unreachable"        (interactive lapse — proceeded, logged)
+//   "[ACP] ⚠ KEY REJECTED (HTTP 401/403)"             (interactive, bad key — proceeded, logged)
+//   "[ACP] Key rejected (HTTP 401/403) — ... blocked" (unattended tier, bad key)
 //
 // Phase 1 of cross-arch credential brokering — see
 // gatewaystack-connect/docs/cross-arch-governance-strategy.md (parent
@@ -43,7 +45,7 @@
 // always fails open on token-request errors and surfaces a stderr warning;
 // future versions will respect the server's `scopedTokensFailMode` policy.
 
-import { readFileSync, appendFileSync } from "fs";
+import { readFileSync, appendFileSync, mkdirSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 
@@ -64,7 +66,7 @@ const ACP_GOVERN =
   process.env.ACP_API_BASE ||
   "https://govern.agenticcontrolplane.com";
 
-const PLUGIN_VERSION = "0.6.8";
+const PLUGIN_VERSION = "0.6.9";
 
 // Identifies the calling client to the server (per-client policy routing).
 // Each client's hooks.json sets this env var at invocation time:
@@ -175,6 +177,32 @@ function resolveAgentTier() {
   return "interactive";
 }
 
+// True the first time the workspace-deleted notice is asked for in a session,
+// false after (gatewaystack-connect#1693, ported from claude-code-acp-plugin
+// 0.29.3). With no session id, at most once per 24h via a timestamp marker.
+// Fails toward showing the notice: an unwritable marker means it repeats,
+// not vanishes.
+const DELETED_NOTICE_DIR = join(homedir(), ".acp", "notices");
+const DELETED_NOTICE_WINDOW_MS = 24 * 60 * 60 * 1000;
+function firstDeletedNoticeThisSession(sessionId) {
+  const id = String(sessionId ?? "").replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120);
+  try {
+    mkdirSync(DELETED_NOTICE_DIR, { recursive: true });
+    if (!id || id === "unknown") {
+      const marker = join(DELETED_NOTICE_DIR, "workspace-deleted.no-session");
+      let last = 0;
+      try { last = Date.parse(readFileSync(marker, "utf8").trim()) || 0; } catch { /* absent */ }
+      if (Date.now() - last < DELETED_NOTICE_WINDOW_MS) return false;
+      writeFileSync(marker, new Date().toISOString());
+      return true;
+    }
+    writeFileSync(join(DELETED_NOTICE_DIR, `workspace-deleted.${id}`), new Date().toISOString(), { flag: "wx" });
+    return true;
+  } catch (e) {
+    return e?.code !== "EEXIST";
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Scoped-token request (Phase 1 cross-arch broker)                    */
 /* ------------------------------------------------------------------ */
@@ -272,7 +300,44 @@ async function handlePreToolUse() {
     }));
     process.exit(0);
   }
-  function denyGatewayError(status, statusText) {
+  // A 401/403 is NOT the gateway being down — it is this machine's key being
+  // revoked, mistyped, or from a deleted workspace. Reading it as "gateway
+  // unreachable" left a user running ungoverned for hours believing it was
+  // our outage. Same tier posture as an outage (interactive fails open,
+  // unattended stays blocked), but the message names the cause and the fix.
+  // `code: "workspace_deleted"`: the owner deleted the workspace on purpose —
+  // say so once per session with how to remove ACP, then proceed silently.
+  // (gatewaystack-connect#1693, ported from claude-code-acp-plugin 0.29.3.)
+  function failPostureOnKeyRejected(status, code) {
+    const tier = resolveAgentTier();
+    const deleted = code === "workspace_deleted";
+    const fix = deleted
+      ? "The ACP workspace this machine was connected to has been deleted. To remove ACP from this machine: acp-uninstall (older installs without it: curl -sf https://agenticcontrolplane.com/uninstall.sh | bash). To keep using ACP, re-run the installer: curl -sf https://agenticcontrolplane.com/install.sh | bash"
+      : "Fix: re-run the installer (curl -sf https://agenticcontrolplane.com/install.sh | bash) or create a key at https://cloud.agenticcontrolplane.com/settings/api-keys and save it: echo 'gsk_...' > ~/.acp/credentials";
+    if (tier === "interactive") {
+      try {
+        mkdirSync(join(homedir(), ".acp"), { recursive: true });
+        appendFileSync(join(homedir(), ".acp", "lapse.log"),
+          JSON.stringify({ at: new Date().toISOString(), tool: input.tool_name, tier, detail: `key rejected (HTTP ${status})` }) + "\n");
+      } catch { /* best-effort */ }
+      if (deleted && !firstDeletedNoticeThisSession(input.session_id)) {
+        process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" } }));
+        process.exit(0);
+      }
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" },
+        systemMessage: `[ACP] ⚠ KEY REJECTED (HTTP ${status}): the key in ~/.acp/credentials is revoked or invalid — this call proceeded UNGOVERNED and unlogged, and every call will until it is fixed. ${fix}`,
+      }));
+      process.exit(0);
+    }
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny" },
+      systemMessage: `[ACP] Key rejected (HTTP ${status}) — the key in ~/.acp/credentials is revoked or invalid; ${tier} tier stays blocked until it is fixed. ${fix}`,
+    }));
+    process.exit(0);
+  }
+  function denyGatewayError(status, statusText, code) {
+    if (status === 401 || status === 403) { failPostureOnKeyRejected(status, code); return; }
     const detail = statusText ? `HTTP ${status} ${statusText}` : `HTTP ${status}`;
     failPostureOnOutage(detail);
   }
@@ -330,7 +395,12 @@ async function handlePreToolUse() {
       res = await askPolicy(RETRY_ATTEMPT_MS);
     }
     if (!res.ok) {
-      denyGatewayError(res.status, res.statusText);
+      let code;
+      if (res.status >= 400 && res.status < 500) {
+        const errBody = await res.json().catch(() => null);
+        code = typeof errBody?.code === "string" ? errBody.code : undefined;
+      }
+      denyGatewayError(res.status, res.statusText, code);
       return;
     }
     const data = await res.json();
