@@ -71,8 +71,9 @@ const PLUGIN_VERSION = "0.6.9";
 // Identifies the calling client to the server (per-client policy routing).
 // Each client's hooks.json sets this env var at invocation time:
 // "claude-code-plugin", "cursor", "codex", etc. Falls back to
-// claude-code-plugin for backward compat.
-const ACP_CLIENT = process.env.ACP_CLIENT || "claude-code-plugin";
+// codex-plugin: this is the Codex adapter, so a missing env must never
+// declare itself a different client.
+const ACP_CLIENT = process.env.ACP_CLIENT || "codex-plugin";
 
 // Harness quirk switch. Codex adopted Claude Code's hook wire format but
 // its parser only ACTS on permissionDecision "deny" — "ask" and
@@ -177,6 +178,17 @@ function resolveAgentTier() {
   return "interactive";
 }
 
+// #1518 attended signal. The one honest runtime signal Codex gives is the
+// payload's permission_mode: bypassPermissions / dontAsk / never mean nobody
+// answers a prompt. Sent only when the mode is a non-empty string. No
+// native_ask capability: Codex RUNS the tool on "ask", so ask stays → deny.
+const UNATTENDED_MODES = ["bypassPermissions", "dontAsk", "never"];
+function attendedSignal() {
+  const mode = input.permission_mode;
+  if (typeof mode !== "string" || mode === "") return undefined;
+  return { claim: !UNATTENDED_MODES.includes(mode), source: "permission_mode", mode };
+}
+
 // True the first time the workspace-deleted notice is asked for in a session,
 // false after (gatewaystack-connect#1693, ported from claude-code-acp-plugin
 // 0.29.3). With no session id, at most once per 24h via a timestamp marker.
@@ -262,6 +274,7 @@ async function handlePreToolUse() {
     hook_event_name: "PreToolUse",
     agent_tier: resolveAgentTier(),
     permission_mode: input.permission_mode,
+    attended: attendedSignal(),
   });
 
   // Three distinct deny categories — distinguishable at-a-glance.
