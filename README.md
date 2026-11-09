@@ -33,7 +33,7 @@ Or by hand: get a token at [cloud.agenticcontrolplane.com/plugin/authorize](http
 |---|---|
 | `PreToolUse` hook | POSTs the command to `/govern/tool-use` before it runs. `deny` blocks it with the policy reason. An `ask` blocks with an approval link: approve on the dashboard (or from the notification email), re-run, and the grant admits it. |
 | `PostToolUse` hook | POSTs the result to `/govern/tool-output` for audit, redaction logging and DLP scanning. |
-| MCP server (`acp`) | Streamable HTTP at `api.agenticcontrolplane.com/mcp`. Sign-in is MCP OAuth: Codex opens the browser, you approve, and calls are attributed to you. Nine tools: eight read-only, plus `acp_propose_rule`, which drafts a rule for you to confirm in the console. It never applies policy itself. |
+| MCP server (`acp`) | Streamable HTTP at `api.agenticcontrolplane.com/mcp`. Sign-in is MCP OAuth: Codex opens the browser, you approve, and calls are attributed to you. Mostly read-only tools. `acp_propose_rule` drafts a rule for you to confirm in the console and never applies policy itself. |
 | Skills | `acp` (how it works), `acp-connect` (setup), `cost-xray` (read your own spend). |
 
 ## What Codex limits
@@ -41,7 +41,7 @@ Or by hand: get a token at [cloud.agenticcontrolplane.com/plugin/authorize](http
 - **Coverage.** On current Codex builds the hook fires for shell commands, `apply_patch` edits, MCP calls and other local tools. Older builds fire it for shell only. Hosted tools such as web search never reach a hook; the MCP connector's `acp_check` is the route for those. See the [Codex hooks docs](https://developers.openai.com/codex/hooks) and the [coverage matrix](https://agenticcontrolplane.com/coverage).
 - **Approvals.** Codex's hook parser acts on `deny` only. There's no inline `ask` prompt like Claude Code's. ACP turns an `ask` into a deny that carries the approval link. After you approve, the identical re-run passes.
 - **No token injection.** Codex rejects `updatedInput`, so ACP's scoped vendor-token injection (GitHub and others) is off under Codex. Your local credentials work as before.
-- **If the gateway is unreachable.** Interactive sessions proceed with a loud `UNGOVERNED` warning, and a record goes to `~/.acp/lapse.log`. Sessions in `bypassPermissions` or `auto` mode count as unattended and stay blocked, with a message saying why. For a self-hosted gateway, set `ACP_API_BASE` and `ACP_GOVERN_BASE`.
+- **If the gateway is unreachable.** Interactive sessions proceed with a loud `UNGOVERNED` warning, and a record goes to `~/.acp/lapse.log`. The plugin has no offline floor, so nothing is applied during that window. Sessions in `bypassPermissions` or `auto` mode count as unattended and stay blocked, with a message saying why. This is the plugin's behavior; the `install.sh` route uses the shared hook, which fails open in every tier unless `ACP_FAIL_MODE=closed` or `~/.acp/failmode` is set. For a self-hosted gateway, set `ACP_API_BASE` and `ACP_GOVERN_BASE`.
 
 ## Enterprise
 
