@@ -66,7 +66,7 @@ const ACP_GOVERN =
   process.env.ACP_API_BASE ||
   "https://govern.agenticcontrolplane.com";
 
-const PLUGIN_VERSION = "0.6.9";
+const PLUGIN_VERSION = "0.6.10";
 
 // Identifies the calling client to the server (per-client policy routing).
 // Each client's hooks.json sets this env var at invocation time:
@@ -79,8 +79,8 @@ const ACP_CLIENT = process.env.ACP_CLIENT || "codex-plugin";
 // its parser only ACTS on permissionDecision "deny" — "ask" and
 // updatedInput are rejected, which marks the hook run FAILED and lets the
 // tool call proceed (fail-open on exactly the calls that needed review).
-// Under codex we therefore (a) map ask → deny with the approval link in
-// the message (approve on the dashboard, re-run, the grant admits it) and
+// We therefore (a) always map ask → deny with the approval link in the
+// message (approve on the dashboard, re-run, the grant admits it) and, under codex,
 // (b) skip updatedInput vendor-token injection. The Codex plugin's
 // hooks.json sets ACP_HARNESS=codex.
 const HARNESS = process.env.ACP_HARNESS || "claude-code";
@@ -278,12 +278,19 @@ async function handlePreToolUse() {
   });
 
   // Three distinct deny categories — distinguishable at-a-glance.
-  function denyByPolicy(reason) {
+  // A policy deny (how a hold arrives on Codex) carries the gateway's reason,
+  // console link included, in both fields: Codex shows systemMessage to the
+  // person only and hands permissionDecisionReason to the model as well.
+  // The reason is passed through whole — no cutting, wrapping or escaping.
+  function denyWithReason(text) {
     process.stdout.write(JSON.stringify({
-      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny" },
-      systemMessage: `[ACP] Denied by policy: ${reason}`,
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: text },
+      systemMessage: text,
     }));
     process.exit(0);
+  }
+  function denyByPolicy(reason) {
+    denyWithReason(`[ACP] Denied by policy: ${reason}`);
   }
   // Unreachability posture (#385, decided 2026-07-21): fail-open is the
   // universal default and every lapse is LOUD (never-brick). An ACP outage
@@ -358,15 +365,14 @@ async function handlePreToolUse() {
     failPostureOnOutage(detail || "network error");
   }
   function ask(reason) {
-    // Codex has no ask semantic on the wire (see HARNESS note): emit deny
-    // with the approval deep link so the human approves out-of-band and
-    // the re-run passes under the grant.
-    const decision = HARNESS === "codex" ? "deny" : "ask";
-    process.stdout.write(JSON.stringify({
-      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: decision },
-      systemMessage: `[ACP] Approval required: ${reason}`,
-    }));
-    process.exit(0);
+    // Codex has no ask semantic on the wire (see HARNESS note) and RUNS the
+    // tool on "ask", so this always writes deny, whatever ACP_HARNESS says,
+    // with the gateway's approval link so the human approves out-of-band
+    // and the re-run passes under the grant.
+    denyWithReason(
+      "[ACP] This call needs a person's approval and Codex cannot ask from a hook, so it is blocked. " +
+      `Approve it in the ACP console, then run it again.\n\n${reason}`
+    );
   }
 
   // Step 1: policy check.
