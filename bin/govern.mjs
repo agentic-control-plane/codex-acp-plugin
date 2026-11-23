@@ -237,14 +237,28 @@ const REASON_STRIP = new RegExp(
   "[" + REASON_STRIP_RANGES.map(([a, b]) => String.fromCharCode(a) + "-" + String.fromCharCode(b)).join("") + "]",
   "g",
 );
+// An unpaired UTF-16 surrogate would be written as a lone \udXXX escape,
+// which a strict JSON parser on the harness side can reject (and a rejected
+// hook output may let the tool run). Replace each with U+FFFD. In /u mode
+// \p{Surrogate} matches only unpaired halves; a regex keeps this working on
+// Node versions without String.prototype.toWellFormed.
+const LONE_SURROGATE = /\p{Surrogate}/gu;
+const REPLACEMENT_CHAR = String.fromCharCode(0xfffd);
 function cleanReason(raw, fallback) {
   if (typeof raw !== "string") return fallback;
   const s = raw
-    .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\|$)/g, "")            // OSC ... BEL / ST
-    .replace(/[\x1b\x9b]\[?[0-?]*[ -/]*[@-~]?/g, "")             // CSI and lone ESC
+    .replace(LONE_SURROGATE, REPLACEMENT_CHAR)
+    // OSC: ends at BEL or ST; an unterminated one stops at the next newline
+    // or ESC so it cannot swallow the lines after it (the console link).
+    .replace(/\x1b\][^\x07\x1b\n]*(?:\x07|\x1b\\)?/g, "")
+    // CSI: introducer, parameters, intermediates and a required final byte.
+    .replace(/(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]/g, "")
     .replace(/\r\n?/g, "\n")
+    // Any ESC still left (lone, or an unfinished sequence) goes by itself
+    // here, with the other control characters; the text after it stays.
     .replace(REASON_STRIP, "");
   if (!s.trim()) return fallback;
+  // Array.from splits by code point, so the cut never separates a pair.
   const cp = Array.from(s);
   if (cp.length <= REASON_MAX_CHARS) return s;
   const marker = "\n[... reason shortened ...]\n";
@@ -321,12 +335,15 @@ async function handlePreToolUse() {
   // The reason is passed through as written — no wrapping or HTML escaping —
   // except that cleanReason drops terminal escape sequences and invisible
   // control / direction characters, and caps a runaway length.
+  // A reason can be several KB of multi-byte text, written twice; on a pipe
+  // that is asynchronous (macOS), exiting straight after write() cuts the
+  // JSON short, and unparseable hook output may let the tool run. So exit
+  // only once the write has flushed. Every caller returns right after this.
   function denyWithReason(text) {
     process.stdout.write(JSON.stringify({
       hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: text },
       systemMessage: text,
-    }));
-    process.exit(0);
+    }), () => process.exit(0));
   }
   function denyByPolicy(reason) {
     denyWithReason(`[ACP] Denied by policy: ${cleanReason(reason, "policy did not return a reason")}`);
@@ -603,11 +620,14 @@ async function handlePostToolUse() {
     // person as systemMessage, never to the model; ACP_SHADOW=off silences it.
     // gatewaystack-connect#1334 — this plugin used to drop every notice.
     const lines = [];
+    // Same cleaning as a PreToolUse reason: no escapes, control characters
+    // or unpaired surrogates reach the terminal from gateway text.
     if (data.action === "redact" || data.action === "block") {
-      lines.push(`[ACP] ${data.action === "block" ? "Blocked" : "Flagged"}: ${data.reason || "governance policy"}`);
+      lines.push(`[ACP] ${data.action === "block" ? "Blocked" : "Flagged"}: ${cleanReason(data.reason, "governance policy")}`);
     }
-    if (!NOTICES_OFF && typeof data.notice === "string" && data.notice.trim()) {
-      lines.push(data.notice.trim().slice(0, 2000));
+    const notice = cleanReason(data.notice, "").trim();
+    if (!NOTICES_OFF && notice) {
+      lines.push(Array.from(notice).slice(0, 2000).join(""));
     }
     if (lines.length) process.stdout.write(JSON.stringify({ systemMessage: lines.join("\n") }));
   } catch {

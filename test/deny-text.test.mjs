@@ -126,6 +126,48 @@ test("a runaway reason is shortened in the middle and keeps the console link", a
   assert.ok(text.endsWith(`Approve: ${URL}`));
 });
 
+const LONE = /\p{Surrogate}/u;
+const FFFD = ch(0xfffd);
+const EMOJI = ch(0xd83d) + ch(0xde00); // a valid surrogate pair
+
+test("an unpaired surrogate in a reason becomes U+FFFD, so the output is well-formed", async () => {
+  for (const decision of ["deny", "ask"]) {
+    const { stdout, out } = await run({ decision, reason: "bad " + ch(0xd83d) + " tail " + ch(0xdc00) + " " + EMOJI });
+    assert.equal(out.hookSpecificOutput.permissionDecision, "deny");
+    assert.ok(!/\\ud[89a-f][0-9a-f]{2}/i.test(stdout), `${decision}: lone surrogate escape in ${stdout}`);
+    for (const text of [out.hookSpecificOutput.permissionDecisionReason, out.systemMessage]) {
+      assert.ok(!LONE.test(text));
+      assert.ok(text.endsWith("bad " + FFFD + " tail " + FFFD + " " + EMOJI), `${decision}: ${JSON.stringify(text)}`);
+    }
+  }
+});
+
+test("shortening a runaway reason never splits a surrogate pair", async () => {
+  for (const pad of ["", "x"]) {
+    const { stdout, out } = await run({ decision: "deny", reason: pad + EMOJI.repeat(30000) + `\nApprove: ${URL}` });
+    const text = out.hookSpecificOutput.permissionDecisionReason;
+    assert.ok(text.includes("[... reason shortened ...]"));
+    assert.ok(!LONE.test(text));
+    assert.ok(!/\\ud[89a-f][0-9a-f]{2}/i.test(stdout));
+    assert.ok(text.endsWith(`Approve: ${URL}`));
+  }
+});
+
+test("hostile escapes do not eat the console link", async () => {
+  const cases = [
+    ["blocked \x1b]0;title\nApprove: " + URL, "blocked \nApprove: " + URL],
+    ["Approve: \x1b" + URL, "Approve: " + URL],
+    ["Approve: \x1b[31\n" + URL, "Approve: [31\n" + URL],
+    ["x\x1b]8;;\x1bApprove: " + URL, "xApprove: " + URL],
+  ];
+  for (const [reason, expected] of cases) {
+    const { out } = await run({ decision: "deny", reason });
+    assert.equal(out.hookSpecificOutput.permissionDecision, "deny");
+    assert.equal(out.hookSpecificOutput.permissionDecisionReason, "[ACP] Denied by policy: " + expected, JSON.stringify(reason));
+    assert.equal(out.systemMessage, out.hookSpecificOutput.permissionDecisionReason);
+  }
+});
+
 test("the PreToolUse request never declares native_ask", async () => {
   for (const decision of ["deny", "ask", "allow"]) {
     const { body } = await run({ decision, reason: "r" });

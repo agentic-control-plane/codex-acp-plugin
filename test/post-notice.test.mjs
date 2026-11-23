@@ -46,6 +46,14 @@ test("no notice and a pass writes nothing", async () => {
   assert.equal(out, "");
 });
 
+test("block reasons and notices are cleaned: no escapes, control characters or unpaired surrogates", async () => {
+  const lone = String.fromCharCode(0xd83d);
+  const out = await withGateway({ action: "block", reason: "sec\x1b[31mret" + lone, notice: "\x1b]0;t\x07cost" + lone + "\x00" }, runPost);
+  assert.ok(!/\\ud[89a-f][0-9a-f]{2}/i.test(out), out);
+  const fffd = String.fromCharCode(0xfffd);
+  assert.equal(JSON.parse(out).systemMessage, "[ACP] Blocked: secret" + fffd + "\ncost" + fffd);
+});
+
 test("ACP_SHADOW=off silences notices but not blocks", async () => {
   assert.equal(await withGateway({ action: "pass", notice: "n" }, (b) => runPost(b, { ACP_SHADOW: "off" })), "");
   const out = await withGateway({ action: "block", reason: "r", notice: "n" }, (b) => runPost(b, { ACP_SHADOW: "off" }));
