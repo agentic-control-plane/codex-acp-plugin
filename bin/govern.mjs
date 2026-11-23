@@ -66,7 +66,7 @@ const ACP_GOVERN =
   process.env.ACP_API_BASE ||
   "https://govern.agenticcontrolplane.com";
 
-const PLUGIN_VERSION = "0.6.9";
+const PLUGIN_VERSION = "0.6.10";
 
 // Identifies the calling client to the server (per-client policy routing).
 // Each client's hooks.json sets this env var at invocation time:
@@ -79,8 +79,8 @@ const ACP_CLIENT = process.env.ACP_CLIENT || "codex-plugin";
 // its parser only ACTS on permissionDecision "deny" — "ask" and
 // updatedInput are rejected, which marks the hook run FAILED and lets the
 // tool call proceed (fail-open on exactly the calls that needed review).
-// Under codex we therefore (a) map ask → deny with the approval link in
-// the message (approve on the dashboard, re-run, the grant admits it) and
+// We therefore (a) always map ask → deny with the approval link in the
+// message (approve on the dashboard, re-run, the grant admits it) and, under codex,
 // (b) skip updatedInput vendor-token injection. The Codex plugin's
 // hooks.json sets ACP_HARNESS=codex.
 const HARNESS = process.env.ACP_HARNESS || "claude-code";
@@ -215,6 +215,57 @@ function firstDeletedNoticeThisSession(sessionId) {
   }
 }
 
+// Gateway reason text reaches the person's terminal (systemMessage) and the
+// model (permissionDecisionReason). Keep it to printable text: drop ANSI /
+// OSC escape sequences (colour, cursor moves, disguised hyperlinks, title
+// changes), other C0/C1 control characters except newline and tab, and
+// invisible zero-width / bidirectional-override characters that can make
+// the shown text differ from what is really there. A runaway reason is cut
+// in the middle, keeping the end, where the console link sits. Anything
+// that is not a non-empty string after cleaning becomes `fallback`.
+const REASON_MAX_CHARS = 4000;
+const REASON_TAIL_CHARS = 1000;
+// Built from code points so the source stays plain ASCII.
+const REASON_STRIP_RANGES = [
+  [0x00, 0x08], [0x0b, 0x1f], [0x7f, 0x9f],   // C0 (keeps \t \n), DEL, C1
+  [0x200b, 0x200f],                           // zero-width, LRM/RLM
+  [0x2028, 0x2029],                           // line / paragraph separator
+  [0x202a, 0x202e], [0x2066, 0x2069],         // bidi embeddings, overrides, isolates
+  [0x2060, 0x2064], [0xfeff, 0xfeff],         // word joiner, invisible operators, BOM
+];
+const REASON_STRIP = new RegExp(
+  "[" + REASON_STRIP_RANGES.map(([a, b]) => String.fromCharCode(a) + "-" + String.fromCharCode(b)).join("") + "]",
+  "g",
+);
+// An unpaired UTF-16 surrogate would be written as a lone \udXXX escape,
+// which a strict JSON parser on the harness side can reject (and a rejected
+// hook output may let the tool run). Replace each with U+FFFD. In /u mode
+// \p{Surrogate} matches only unpaired halves; a regex keeps this working on
+// Node versions without String.prototype.toWellFormed.
+const LONE_SURROGATE = /\p{Surrogate}/gu;
+const REPLACEMENT_CHAR = String.fromCharCode(0xfffd);
+function cleanReason(raw, fallback) {
+  if (typeof raw !== "string") return fallback;
+  const s = raw
+    .replace(LONE_SURROGATE, REPLACEMENT_CHAR)
+    // OSC: ends at BEL or ST; an unterminated one stops at the next newline
+    // or ESC so it cannot swallow the lines after it (the console link).
+    .replace(/\x1b\][^\x07\x1b\n]*(?:\x07|\x1b\\)?/g, "")
+    // CSI: introducer, parameters, intermediates and a required final byte.
+    .replace(/(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\r\n?/g, "\n")
+    // Any ESC still left (lone, or an unfinished sequence) goes by itself
+    // here, with the other control characters; the text after it stays.
+    .replace(REASON_STRIP, "");
+  if (!s.trim()) return fallback;
+  // Array.from splits by code point, so the cut never separates a pair.
+  const cp = Array.from(s);
+  if (cp.length <= REASON_MAX_CHARS) return s;
+  const marker = "\n[... reason shortened ...]\n";
+  const head = REASON_MAX_CHARS - REASON_TAIL_CHARS - marker.length;
+  return cp.slice(0, head).join("") + marker + cp.slice(-REASON_TAIL_CHARS).join("");
+}
+
 /* ------------------------------------------------------------------ */
 /* Scoped-token request (Phase 1 cross-arch broker)                    */
 /* ------------------------------------------------------------------ */
@@ -278,12 +329,24 @@ async function handlePreToolUse() {
   });
 
   // Three distinct deny categories — distinguishable at-a-glance.
-  function denyByPolicy(reason) {
+  // A policy deny (how a hold arrives on Codex) carries the gateway's reason,
+  // console link included, in both fields: Codex shows systemMessage to the
+  // person only and hands permissionDecisionReason to the model as well.
+  // The reason is passed through as written — no wrapping or HTML escaping —
+  // except that cleanReason drops terminal escape sequences and invisible
+  // control / direction characters, and caps a runaway length.
+  // A reason can be several KB of multi-byte text, written twice; on a pipe
+  // that is asynchronous (macOS), exiting straight after write() cuts the
+  // JSON short, and unparseable hook output may let the tool run. So exit
+  // only once the write has flushed. Every caller returns right after this.
+  function denyWithReason(text) {
     process.stdout.write(JSON.stringify({
-      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny" },
-      systemMessage: `[ACP] Denied by policy: ${reason}`,
-    }));
-    process.exit(0);
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: text },
+      systemMessage: text,
+    }), () => process.exit(0));
+  }
+  function denyByPolicy(reason) {
+    denyWithReason(`[ACP] Denied by policy: ${cleanReason(reason, "policy did not return a reason")}`);
   }
   // Unreachability posture (#385, decided 2026-07-21): fail-open is the
   // universal default and every lapse is LOUD (never-brick). An ACP outage
@@ -358,15 +421,14 @@ async function handlePreToolUse() {
     failPostureOnOutage(detail || "network error");
   }
   function ask(reason) {
-    // Codex has no ask semantic on the wire (see HARNESS note): emit deny
-    // with the approval deep link so the human approves out-of-band and
-    // the re-run passes under the grant.
-    const decision = HARNESS === "codex" ? "deny" : "ask";
-    process.stdout.write(JSON.stringify({
-      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: decision },
-      systemMessage: `[ACP] Approval required: ${reason}`,
-    }));
-    process.exit(0);
+    // Codex has no ask semantic on the wire (see HARNESS note) and RUNS the
+    // tool on "ask", so this always writes deny, whatever ACP_HARNESS says,
+    // with the gateway's approval link so the human approves out-of-band
+    // and the re-run passes under the grant.
+    denyWithReason(
+      "[ACP] This call needs a person's approval and Codex cannot ask from a hook, so it is blocked. " +
+      `Approve it in the ACP console, then run it again.\n\n${cleanReason(reason, "approval required")}`
+    );
   }
 
   // Step 1: policy check.
@@ -558,11 +620,14 @@ async function handlePostToolUse() {
     // person as systemMessage, never to the model; ACP_SHADOW=off silences it.
     // gatewaystack-connect#1334 — this plugin used to drop every notice.
     const lines = [];
+    // Same cleaning as a PreToolUse reason: no escapes, control characters
+    // or unpaired surrogates reach the terminal from gateway text.
     if (data.action === "redact" || data.action === "block") {
-      lines.push(`[ACP] ${data.action === "block" ? "Blocked" : "Flagged"}: ${data.reason || "governance policy"}`);
+      lines.push(`[ACP] ${data.action === "block" ? "Blocked" : "Flagged"}: ${cleanReason(data.reason, "governance policy")}`);
     }
-    if (!NOTICES_OFF && typeof data.notice === "string" && data.notice.trim()) {
-      lines.push(data.notice.trim().slice(0, 2000));
+    const notice = cleanReason(data.notice, "").trim();
+    if (!NOTICES_OFF && notice) {
+      lines.push(Array.from(notice).slice(0, 2000).join(""));
     }
     if (lines.length) process.stdout.write(JSON.stringify({ systemMessage: lines.join("\n") }));
   } catch {
