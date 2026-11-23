@@ -215,6 +215,43 @@ function firstDeletedNoticeThisSession(sessionId) {
   }
 }
 
+// Gateway reason text reaches the person's terminal (systemMessage) and the
+// model (permissionDecisionReason). Keep it to printable text: drop ANSI /
+// OSC escape sequences (colour, cursor moves, disguised hyperlinks, title
+// changes), other C0/C1 control characters except newline and tab, and
+// invisible zero-width / bidirectional-override characters that can make
+// the shown text differ from what is really there. A runaway reason is cut
+// in the middle, keeping the end, where the console link sits. Anything
+// that is not a non-empty string after cleaning becomes `fallback`.
+const REASON_MAX_CHARS = 4000;
+const REASON_TAIL_CHARS = 1000;
+// Built from code points so the source stays plain ASCII.
+const REASON_STRIP_RANGES = [
+  [0x00, 0x08], [0x0b, 0x1f], [0x7f, 0x9f],   // C0 (keeps \t \n), DEL, C1
+  [0x200b, 0x200f],                           // zero-width, LRM/RLM
+  [0x2028, 0x2029],                           // line / paragraph separator
+  [0x202a, 0x202e], [0x2066, 0x2069],         // bidi embeddings, overrides, isolates
+  [0x2060, 0x2064], [0xfeff, 0xfeff],         // word joiner, invisible operators, BOM
+];
+const REASON_STRIP = new RegExp(
+  "[" + REASON_STRIP_RANGES.map(([a, b]) => String.fromCharCode(a) + "-" + String.fromCharCode(b)).join("") + "]",
+  "g",
+);
+function cleanReason(raw, fallback) {
+  if (typeof raw !== "string") return fallback;
+  const s = raw
+    .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\|$)/g, "")            // OSC ... BEL / ST
+    .replace(/[\x1b\x9b]\[?[0-?]*[ -/]*[@-~]?/g, "")             // CSI and lone ESC
+    .replace(/\r\n?/g, "\n")
+    .replace(REASON_STRIP, "");
+  if (!s.trim()) return fallback;
+  const cp = Array.from(s);
+  if (cp.length <= REASON_MAX_CHARS) return s;
+  const marker = "\n[... reason shortened ...]\n";
+  const head = REASON_MAX_CHARS - REASON_TAIL_CHARS - marker.length;
+  return cp.slice(0, head).join("") + marker + cp.slice(-REASON_TAIL_CHARS).join("");
+}
+
 /* ------------------------------------------------------------------ */
 /* Scoped-token request (Phase 1 cross-arch broker)                    */
 /* ------------------------------------------------------------------ */
@@ -281,7 +318,9 @@ async function handlePreToolUse() {
   // A policy deny (how a hold arrives on Codex) carries the gateway's reason,
   // console link included, in both fields: Codex shows systemMessage to the
   // person only and hands permissionDecisionReason to the model as well.
-  // The reason is passed through whole — no cutting, wrapping or escaping.
+  // The reason is passed through as written — no wrapping or HTML escaping —
+  // except that cleanReason drops terminal escape sequences and invisible
+  // control / direction characters, and caps a runaway length.
   function denyWithReason(text) {
     process.stdout.write(JSON.stringify({
       hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: text },
@@ -290,7 +329,7 @@ async function handlePreToolUse() {
     process.exit(0);
   }
   function denyByPolicy(reason) {
-    denyWithReason(`[ACP] Denied by policy: ${reason}`);
+    denyWithReason(`[ACP] Denied by policy: ${cleanReason(reason, "policy did not return a reason")}`);
   }
   // Unreachability posture (#385, decided 2026-07-21): fail-open is the
   // universal default and every lapse is LOUD (never-brick). An ACP outage
@@ -371,7 +410,7 @@ async function handlePreToolUse() {
     // and the re-run passes under the grant.
     denyWithReason(
       "[ACP] This call needs a person's approval and Codex cannot ask from a hook, so it is blocked. " +
-      `Approve it in the ACP console, then run it again.\n\n${reason}`
+      `Approve it in the ACP console, then run it again.\n\n${cleanReason(reason, "approval required")}`
     );
   }
 

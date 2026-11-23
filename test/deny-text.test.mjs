@@ -76,6 +76,56 @@ test("a gateway ask is a deny even when ACP_HARNESS is not codex", async () => {
   assert.equal(out.hookSpecificOutput.permissionDecision, "deny");
 });
 
+// Every character that must never reach the terminal or the model from a reason.
+// Built from code points so the source stays plain ASCII.
+const ch = (n) => String.fromCharCode(n);
+const FORBIDDEN = new RegExp("[" + [
+  [0x00, 0x08], [0x0b, 0x1f], [0x7f, 0x9f], [0x200b, 0x200f], [0x2028, 0x2029],
+  [0x202a, 0x202e], [0x2060, 0x2064], [0x2066, 0x2069], [0xfeff, 0xfeff],
+].map(([a, b]) => ch(a) + "-" + ch(b)).join("") + "]");
+const RLO = ch(0x202e), PDF = ch(0x202c), ZWSP = ch(0x200b), LSEP = ch(0x2028), BOM = ch(0xfeff);
+
+test("terminal escapes, control and bidi characters in a reason are dropped from both fields", async () => {
+  const dirty =
+    "\x1b[2J\x1b[31mforce push\x1b[0m blocked\r\n" +
+    "\x1b]8;;https://evil.example/\x07click here\x1b]8;;\x07\x1b]0;title\x1b\\" +
+    RLO + "esrever" + PDF + ZWSP + LSEP + BOM + "\x00\x07\x9b5m\x7f\n" +
+    `Approve: ${URL}`;
+  const clean = "force push blocked\nclick hereesrever\n" + `Approve: ${URL}`;
+  for (const decision of ["deny", "ask"]) {
+    const { out } = await run({ decision, reason: dirty });
+    assert.equal(out.hookSpecificOutput.permissionDecision, "deny");
+    for (const text of [out.hookSpecificOutput.permissionDecisionReason, out.systemMessage]) {
+      assert.ok(!FORBIDDEN.test(text), `${decision}: forbidden character left in ${JSON.stringify(text)}`);
+      assert.ok(!text.includes("evil.example"), `${decision}: hidden hyperlink target leaked`);
+      assert.ok(text.endsWith(clean), `${decision}: ${JSON.stringify(text)}`);
+    }
+  }
+});
+
+test("a reason that is not a non-empty string falls back and still denies", async () => {
+  for (const reason of [{ x: 1 }, 42, ["a"], "\x1b[0m" + ZWSP + " \x07"]) {
+    const { out } = await run({ decision: "deny", reason });
+    assert.equal(out.hookSpecificOutput.permissionDecision, "deny");
+    assert.equal(out.hookSpecificOutput.permissionDecisionReason, "[ACP] Denied by policy: policy did not return a reason");
+    assert.equal(out.systemMessage, out.hookSpecificOutput.permissionDecisionReason);
+  }
+  const { out } = await run({ decision: "ask", reason: { x: 1 } });
+  assert.equal(out.hookSpecificOutput.permissionDecision, "deny");
+  assert.ok(out.systemMessage.endsWith("\n\napproval required"));
+});
+
+test("a runaway reason is shortened in the middle and keeps the console link", async () => {
+  const long = "x".repeat(50000) + `\nApprove: ${URL}`;
+  const { out } = await run({ decision: "deny", reason: long });
+  assert.equal(out.hookSpecificOutput.permissionDecision, "deny");
+  const text = out.hookSpecificOutput.permissionDecisionReason;
+  assert.equal(text, out.systemMessage);
+  assert.ok(text.length < 4100, `length ${text.length}`);
+  assert.ok(text.includes("[... reason shortened ...]"));
+  assert.ok(text.endsWith(`Approve: ${URL}`));
+});
+
 test("the PreToolUse request never declares native_ask", async () => {
   for (const decision of ["deny", "ask", "allow"]) {
     const { body } = await run({ decision, reason: "r" });
